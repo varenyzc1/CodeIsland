@@ -25,8 +25,15 @@ struct TerminalVisibilityDetector {
     /// Fast check: is the session's terminal app the frontmost application?
     /// Safe to call from the main thread — no AppleScript or subprocess calls.
     static func isTerminalFrontmostForSession(_ session: SessionSnapshot) -> Bool {
-        guard let termApp = session.termApp else { return false }
         guard let frontApp = NSWorkspace.shared.frontmostApplication else { return false }
+
+        if let termBundleId = session.termBundleId?.lowercased(),
+           !termBundleId.isEmpty,
+           frontApp.bundleIdentifier?.lowercased() == termBundleId {
+            return true
+        }
+
+        guard let termApp = session.termApp else { return false }
 
         let frontName = frontApp.localizedName?.lowercased() ?? ""
         let bundleId = frontApp.bundleIdentifier?.lowercased() ?? ""

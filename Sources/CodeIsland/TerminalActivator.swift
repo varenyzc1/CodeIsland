@@ -7,6 +7,7 @@ import CodeIslandCore
 struct TerminalActivator {
 
     private static let knownTerminals: [(name: String, bundleId: String)] = [
+        ("cmux", "com.cmuxterm.app"),
         ("Ghostty", "com.mitchellh.ghostty"),
         ("iTerm2", "com.googlecode.iterm2"),
         ("WezTerm", "com.github.wez.wezterm"),
@@ -285,7 +286,8 @@ struct TerminalActivator {
     private static func bringToFront(_ termApp: String) {
         let name: String
         let lower = termApp.lowercased()
-        if lower.contains("ghostty") { name = "Ghostty" }
+        if lower.contains("cmux") { name = "cmux" }
+        else if lower.contains("ghostty") { name = "Ghostty" }
         else if lower.contains("iterm") { name = "iTerm2" }
         else if lower.contains("terminal") || lower.contains("apple_terminal") { name = "Terminal" }
         else if lower.contains("wezterm") || lower.contains("wez") { name = "WezTerm" }

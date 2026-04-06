@@ -125,6 +125,7 @@ public struct SessionSnapshot {
         // Check bundle ID for terminal identification (more reliable than TERM_PROGRAM)
         if let bid = termBundleId {
             let lower = bid.lowercased()
+            if lower.contains("cmux") { return "cmux" }
             if lower.contains("warp") { return "Warp" }
             if lower.contains("ghostty") { return "Ghostty" }
             if lower.contains("iterm2") { return "iTerm2" }
@@ -135,6 +136,7 @@ public struct SessionSnapshot {
         // Fallback to TERM_PROGRAM
         guard let app = termApp else { return nil }
         let lower = app.lowercased()
+        if lower.contains("cmux") { return "cmux" }
         if lower.contains("ghostty") { return "Ghostty" }
         if lower.contains("iterm") { return "iTerm2" }
         if lower.contains("warp") { return "Warp" }
