@@ -263,9 +263,14 @@ private struct CompactLeftWing: View {
     let showToolStatus: Bool
     @AppStorage(SettingsKey.sessionGroupingMode) private var groupingMode = SettingsDefaults.sessionGroupingMode
 
-    private var displaySource: String { appState.rotatingSession?.source ?? appState.primarySource }
-    private var displayStatus: AgentStatus { appState.rotatingSession?.status ?? appState.status }
-    private var liveTool: String? { appState.rotatingSession?.currentTool ?? appState.currentTool }
+    private var displaySession: SessionSnapshot? {
+        let sid = appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
+        guard let sid else { return nil }
+        return appState.sessions[sid]
+    }
+    private var displaySource: String { displaySession?.source ?? appState.primarySource }
+    private var displayStatus: AgentStatus { displaySession?.status ?? .idle }
+    private var liveTool: String? { displaySession?.currentTool }
     @State private var shownTool: String?
     @State private var lingerTimer: Timer?
 
@@ -346,9 +351,11 @@ private struct CompactRightWing: View {
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
 
+    private var displaySessionId: String? {
+        appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
+    }
     private var projectName: String? {
-        let cwd = appState.rotatingSession?.cwd ?? appState.sessions.values.first?.cwd
-        guard let cwd, !cwd.isEmpty else { return nil }
+        guard let sid = displaySessionId, let cwd = appState.sessions[sid]?.cwd, !cwd.isEmpty else { return nil }
         return (cwd as NSString).lastPathComponent
     }
 
@@ -431,17 +438,17 @@ private func toolStatusColor(_ tool: String) -> Color {
 private struct CompactToolStatus: View {
     var appState: AppState
 
-    private var liveTool: String? { appState.rotatingSession?.currentTool ?? appState.currentTool }
-    private var liveDesc: String? { appState.rotatingSession?.toolDescription ?? appState.toolDescription }
-    private var displayStatus: AgentStatus { appState.rotatingSession?.status ?? appState.status }
-
+    /// Single source of truth: all fields derive from the same session.
     private var displaySessionId: String? {
-        appState.rotatingSessionId ?? appState.sessions.keys.sorted().first
+        appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
     }
     private var displaySession: SessionSnapshot? {
         guard let sid = displaySessionId else { return nil }
         return appState.sessions[sid]
     }
+    private var liveTool: String? { displaySession?.currentTool }
+    private var liveDesc: String? { displaySession?.toolDescription }
+    private var displayStatus: AgentStatus { displaySession?.status ?? .idle }
     private var projectName: String? {
         guard let cwd = displaySession?.cwd, !cwd.isEmpty else { return nil }
         return (cwd as NSString).lastPathComponent
@@ -460,10 +467,13 @@ private struct CompactToolStatus: View {
         return trimmed
     }
 
+    /// Whether there's any activity worth showing (tool running or thinking)
+    private var hasActivity: Bool { shownTool != nil || displayStatus == .processing }
+
     var body: some View {
         HStack(spacing: 5) {
-            // Project name — always visible
-            if let project = projectName {
+            // Project name — only shown when there's tool activity
+            if hasActivity, let project = projectName {
                 Text(project)
                     .foregroundStyle(.white.opacity(0.8))
                     .id("center-project-\(displaySessionId ?? "")")

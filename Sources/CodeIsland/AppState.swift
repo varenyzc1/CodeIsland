@@ -863,12 +863,12 @@ final class AppState {
             }
             sessions[p.sessionId] = snapshot
             refreshProviderTitle(for: p.sessionId)
-            // Synchronous path: if cliPid is set and process is alive, attach immediately
+            // Attach process monitor for exit detection, but keep status idle —
+            // actual status will be updated when the next hook event arrives.
             if let pid = snapshot.cliPid, pid > 0, kill(pid, 0) == 0 {
                 monitorProcess(sessionId: p.sessionId, pid: pid)
-                sessions[p.sessionId]?.status = .processing
             } else {
-                // Async fallback: scan for Claude processes by CWD
+                // Async fallback: scan for Claude processes by CWD (monitor only)
                 let sid = p.sessionId
                 Task.detached {
                     let pid = Self.findPidForCwd(snapshot.cwd ?? "")
@@ -877,11 +877,6 @@ final class AppState {
                               self.sessions[sid] != nil,
                               self.processMonitors[sid] == nil else { return }
                         self.monitorProcess(sessionId: sid, pid: pid)
-                        self.sessions[sid]?.status = .processing
-                        // Re-select active session now that we know it's alive
-                        if self.activeSessionId == nil || self.sessions[self.activeSessionId ?? ""]?.status == .idle {
-                            self.activeSessionId = sid
-                        }
                         self.refreshDerivedState()
                     }
                 }
@@ -970,14 +965,8 @@ final class AppState {
             if sessions[info.sessionId] != nil {
                 if processMonitors[info.sessionId] == nil, let pid = info.pid {
                     monitorProcess(sessionId: info.sessionId, pid: pid)
-                    // If process is alive and session was idle, reactivate it
-                    if sessions[info.sessionId]?.status == .idle {
-                        sessions[info.sessionId]?.status = .processing
-                    }
-                    // Switch focus if current active session is idle
-                    if activeSessionId == nil || sessions[activeSessionId ?? ""]?.status == .idle {
-                        activeSessionId = info.sessionId
-                    }
+                    // Don't mark as processing — process being alive doesn't mean AI is working.
+                    // Status will be updated when the next hook event arrives.
                 }
                 refreshProviderTitle(for: info.sessionId, providerSessionId: info.sessionId)
                 continue
