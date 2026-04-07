@@ -1,16 +1,16 @@
 # Changelog
 
-## [v1.0.9] - 2026-04-07
+## [v1.0.10] - 2026-04-07
 
 ### English
 - Fix apps built with libghostty (e.g. Supacode) being misidentified as Ghostty (#27)
-- Fix DMG release missing app icon by compiling icon assets properly
+- Fix DMG release missing app icon by pre-building icns with all sizes
 - Build universal binary (arm64 + x86_64) for DMG releases
 - Use root Info.plist for DMG builds to include all required fields
 
 ### 中文
 - 修复基于 libghostty 构建的应用（如 Supacode）被误识别为 Ghostty 的问题 (#27)
-- 修复 DMG 发行版缺少应用图标的问题
+- 修复 DMG 发行版缺少应用图标的问题（预置完整尺寸 icns）
 - DMG 发行版改为 universal binary（arm64 + x86_64）
 - DMG 构建使用完整 Info.plist，包含所有必要字段
 
