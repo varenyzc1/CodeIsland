@@ -195,7 +195,7 @@ struct ConfigInstaller {
     }
 
     /// Hook script version — bump this when the script template changes
-    private static let hookScriptVersion = 3
+    private static let hookScriptVersion = 4
 
     /// Hook script for Claude Code (dispatcher: bridge binary → nc fallback)
     private static let hookScript = """
@@ -203,8 +203,7 @@ struct ConfigInstaller {
         # CodeIsland hook v\(hookScriptVersion) — native bridge with shell fallback
         BRIDGE="$HOME/.claude/hooks/codeisland-bridge"
         if [ -x "$BRIDGE" ]; then
-          "$BRIDGE" "$@"
-          exit $?
+          exec "$BRIDGE" "$@"
         fi
         # Fallback: original shell approach (no binary installed yet)
         SOCK="/tmp/codeisland-$(id -u).sock"

@@ -90,22 +90,17 @@ final class AppState {
             removeSession(sessionId)
         }
 
-        // 2. Reset stuck sessions — apply to ALL sessions, including monitored ones.
-        //    Monitored sessions get a longer grace period since the process is known alive.
+        // 2. Reset stuck sessions — only sessions without a live process monitor.
+        //    If a monitor exists and the process is alive, trust the monitor to handle exit.
         //    - No tool + no monitor: 60s (likely lost Stop event)
-        //    - No tool + has monitor: 120s (process alive, but probably missed an event)
         //    - Has tool + no monitor: 180s (long build or deep thinking)
-        //    - Has tool + has monitor: 300s (process alive, tool genuinely running — be patient)
+        //    - Has monitor (any tool state): skip — process exit will handle cleanup
         for (key, session) in sessions where session.status != .idle && session.status != .waitingApproval && session.status != .waitingQuestion {
-            let elapsed = -session.lastActivity.timeIntervalSinceNow
             let hasMonitor = processMonitors[key] != nil
+            if hasMonitor { continue }
+            let elapsed = -session.lastActivity.timeIntervalSinceNow
             let hasTool = session.currentTool != nil
-            let threshold: TimeInterval = switch (hasTool, hasMonitor) {
-                case (false, false): 60
-                case (false, true):  120
-                case (true, false):  180
-                case (true, true):   300
-            }
+            let threshold: TimeInterval = hasTool ? 180 : 60
             if elapsed > threshold {
                 sessions[key]?.status = .idle
                 sessions[key]?.currentTool = nil
