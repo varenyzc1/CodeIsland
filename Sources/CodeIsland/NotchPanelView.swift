@@ -1233,7 +1233,6 @@ private struct SessionIdentityLine: View {
     let sessionFontSize: CGFloat
     let sessionColor: Color
     let dividerColor: Color
-    let cardHovering: Bool
 
     private var displaySessionId: String { session.displaySessionId(sessionId: sessionId) }
 
@@ -1243,8 +1242,7 @@ private struct SessionIdentityLine: View {
                 name: session.projectDisplayName,
                 cwd: session.cwd,
                 fontSize: projectFontSize,
-                color: projectColor,
-                cardHovering: cardHovering
+                color: projectColor
             )
             .layoutPriority(2)
 
@@ -1279,7 +1277,6 @@ private struct ProjectNameLink: View {
     let cwd: String?
     let fontSize: CGFloat
     let color: Color
-    let cardHovering: Bool
 
     var body: some View {
         Text(name)
@@ -1287,24 +1284,7 @@ private struct ProjectNameLink: View {
             .foregroundStyle(color)
             .lineLimit(1)
             .truncationMode(.tail)
-            .overlay(alignment: .bottom) {
-                if cwd != nil {
-                    GeometryReader { geo in
-                        Path { path in
-                            path.move(to: CGPoint(x: 0, y: geo.size.height))
-                            path.addLine(to: CGPoint(x: geo.size.width, y: geo.size.height))
-                        }
-                        .stroke(style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
-                        .foregroundStyle(color.opacity(cardHovering ? 0.5 : 0.2))
-                    }
-                }
-            }
-            .onTapGesture {
-                if let cwd = cwd {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: cwd))
-                }
-            }
-            .help(cwd != nil ? "\(L10n.shared["open_path"]) \(cwd!)" : "")
+            .help(cwd ?? "")
     }
 }
 
@@ -1366,6 +1346,9 @@ private struct SessionCard: View {
     }
 
     var body: some View {
+        Button {
+            TerminalActivator.activate(session: session, sessionId: sessionId)
+        } label: {
         HStack(alignment: .center, spacing: 8) {
             // Column 1: Character + subagent icons
             VStack(spacing: 3) {
@@ -1400,8 +1383,7 @@ private struct SessionCard: View {
                         projectColor: statusNameColor,
                         sessionFontSize: fontSize,
                         sessionColor: .white.opacity(0.76),
-                        dividerColor: .white.opacity(0.28),
-                        cardHovering: hovering
+                        dividerColor: .white.opacity(0.28)
                     )
                     Spacer(minLength: 8)
 
@@ -1413,7 +1395,7 @@ private struct SessionCard: View {
                             SessionTag("YOLO", color: Color(red: 1.0, green: 0.35, blue: 0.35))
                         }
                         SessionTag(timeAgo(session.startTime))
-                        TerminalJumpButton(session: session, sessionId: sessionId)
+                        TerminalBadge(session: session)
                     }
                 }
 
@@ -1490,13 +1472,10 @@ private struct SessionCard: View {
                 .fill(hovering ? Color.white.opacity(0.10) : Color.white.opacity(0.05))
         )
         .padding(.horizontal, 6)
+        } // end Button label
+        .buttonStyle(.plain)
         .contentShape(Rectangle())
         .onHover { h in withAnimation(NotchAnimation.micro) { hovering = h } }
-        .onTapGesture {
-            if isCompletion {
-                TerminalActivator.activate(session: session, sessionId: sessionId)
-            }
-        }
     }
 
     /// Collapse consecutive blank lines and trim leading/trailing whitespace
@@ -1711,15 +1690,10 @@ private struct NotchPanelShape: Shape {
     }
 }
 
-/// Collapsed single-line row for idle sessions >15 min
-private struct TerminalJumpButton: View {
+/// Terminal icon + name badge (display only, not a button)
+private struct TerminalBadge: View {
     let session: SessionSnapshot
-    let sessionId: String
-    @State private var hovering = false
 
-    private let green = Color(red: 0.3, green: 0.85, blue: 0.4)
-
-    /// Known bundle IDs for IDE/app sources
     private static let sourceBundleIds: [String: String] = [
         "cursor": "com.todesktop.230313mzl4w4u92",
         "qoder": "com.qoder.ide",
@@ -1728,54 +1702,35 @@ private struct TerminalJumpButton: View {
         "codex": "com.openai.codex",
         "opencode": "ai.opencode.desktop",
     ]
-
     private static var termIconCache: [String: NSImage] = [:]
 
     private var termIcon: NSImage? {
         let bid = session.termBundleId ?? Self.sourceBundleIds[session.source]
         guard let bid else { return nil }
         if let cached = Self.termIconCache[bid] { return cached }
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid)
-        else { return nil }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) else { return nil }
         let icon = NSWorkspace.shared.icon(forFile: url.path)
         Self.termIconCache[bid] = icon
         return icon
     }
 
     var body: some View {
-        Button {
-            TerminalActivator.activate(session: session, sessionId: sessionId)
-        } label: {
-            HStack(spacing: 4) {
-                if let icon = termIcon {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .frame(width: 13, height: 13)
-                }
-                if let term = session.terminalName {
-                    Text(term)
-                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(green)
-                }
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(green.opacity(hovering ? 1.0 : 0.5))
-                    .offset(x: hovering ? 2 : 0)
+        HStack(spacing: 3) {
+            if let icon = termIcon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: 13, height: 13)
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(green.opacity(hovering ? 0.18 : 0.08))
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { h in
-            withAnimation(.easeOut(duration: 0.15)) { hovering = h }
+            if let term = session.terminalName {
+                Text(term)
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
         }
     }
 }
 
+/// Collapsed single-line row for idle sessions >15 min
 // MARK: - Pixel Text (5×7 dot matrix style)
 
 private struct PixelText: View {
