@@ -18,11 +18,11 @@ public struct HookEvent {
 
     public init?(from data: Data) {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let eventName = json["hook_event_name"] as? String else {
+              let eventName = HookEvent.firstString(in: json, keys: ["hook_event_name", "hookEventName", "event_name", "eventName"]) else {
             return nil
         }
         self.eventName = eventName
-        let rawSessionId = json["session_id"] as? String
+        let rawSessionId = HookEvent.firstString(in: json, keys: ["session_id", "sessionId"])
         if let rawSessionId,
            let remoteHostId = json["_remote_host_id"] as? String,
            !remoteHostId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -30,8 +30,10 @@ public struct HookEvent {
         } else {
             self.sessionId = rawSessionId
         }
-        self.toolName = json["tool_name"] as? String
-        self.toolInput = json["tool_input"] as? [String: Any]
+        self.toolName = HookEvent.firstString(in: json, keys: ["tool_name", "toolName", "tool", "name"])
+            ?? HookEvent.firstString(inNestedDictionary: json, containerKeys: ["tool", "payload", "data"], keys: ["name", "tool_name", "toolName"])
+        self.toolInput = HookEvent.firstDictionary(in: json, keys: ["tool_input", "toolInput", "input", "arguments", "args", "params"])
+            ?? HookEvent.firstDictionary(inNestedDictionary: json, containerKeys: ["tool", "payload", "data"], keys: ["input", "tool_input", "toolInput", "arguments", "args", "params"])
         self.agentId = json["agent_id"] as? String
         self.rawJSON = json
     }
@@ -92,9 +94,59 @@ public struct HookEvent {
             }
         }
         // Fall back to top-level fields
-        if let msg = rawJSON["message"] as? String { return msg }
+        if let msg = HookEvent.firstString(in: rawJSON, keys: ["message", "text", "summary", "status", "detail", "content"]) {
+            return msg
+        }
+        if let msg = HookEvent.firstString(inNestedDictionary: rawJSON, containerKeys: ["payload", "data"], keys: ["message", "text", "summary", "status", "detail", "content"]) {
+            return msg
+        }
         if let agentType = rawJSON["agent_type"] as? String { return agentType }
         if let prompt = rawJSON["prompt"] as? String { return String(prompt.prefix(40)) }
+        return nil
+    }
+
+    private static func firstString(in dict: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = dict[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        return nil
+    }
+
+    private static func firstDictionary(in dict: [String: Any], keys: [String]) -> [String: Any]? {
+        for key in keys {
+            if let value = dict[key] as? [String: Any] { return value }
+        }
+        return nil
+    }
+
+    private static func firstString(
+        inNestedDictionary dict: [String: Any],
+        containerKeys: [String],
+        keys: [String]
+    ) -> String? {
+        for containerKey in containerKeys {
+            if let nested = dict[containerKey] as? [String: Any],
+               let value = firstString(in: nested, keys: keys) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func firstDictionary(
+        inNestedDictionary dict: [String: Any],
+        containerKeys: [String],
+        keys: [String]
+    ) -> [String: Any]? {
+        for containerKey in containerKeys {
+            if let nested = dict[containerKey] as? [String: Any],
+               let value = firstDictionary(in: nested, keys: keys) {
+                return value
+            }
+        }
         return nil
     }
 }

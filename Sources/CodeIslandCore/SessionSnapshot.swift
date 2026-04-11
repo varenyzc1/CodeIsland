@@ -563,7 +563,12 @@ public func reduceEvent(
         }
     case "AfterAgentResponse":
         // Cursor-specific: AI reply arrives here (in "text" field), not in Stop
-        if let text = event.rawJSON["text"] as? String, !text.isEmpty {
+        let responseText = firstStringFromEvent(
+            event,
+            keys: ["text", "message"],
+            includeNested: true
+        )
+        if let text = responseText, !text.isEmpty {
             sessions[sessionId]?.lastAssistantMessage = text
             sessions[sessionId]?.addRecentMessage(ChatMessage(isUser: false, text: text))
         }
@@ -575,9 +580,11 @@ public func reduceEvent(
         sessions[sessionId]?.status = .idle
         sessions[sessionId]?.currentTool = nil
         sessions[sessionId]?.toolDescription = nil
-        let assistantMsg = event.rawJSON["last_assistant_message"] as? String
-            ?? event.rawJSON["text"] as? String
-            ?? event.rawJSON["message"] as? String
+        let assistantMsg = firstStringFromEvent(
+            event,
+            keys: ["last_assistant_message", "text", "message", "summary"],
+            includeNested: true
+        )
         if let msg = assistantMsg {
             sessions[sessionId]?.lastAssistantMessage = msg
             sessions[sessionId]?.addRecentMessage(ChatMessage(isUser: false, text: msg))
@@ -649,7 +656,12 @@ public func reduceEvent(
         effects.append(.removeSession(sessionId: sessionId))
         return effects
     case "Notification":
-        if let msg = event.rawJSON["message"] as? String {
+        let notificationText = firstStringFromEvent(
+            event,
+            keys: ["message", "text", "summary", "status", "detail"],
+            includeNested: true
+        )
+        if let msg = notificationText, !msg.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
             sessions[sessionId]?.toolDescription = msg
         }
         if QuestionPayload.from(event: event) != nil {
@@ -792,6 +804,31 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
        !sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         sessions[sessionId]?.sessionTitle = sessionTitle
     }
+}
+
+private func firstStringFromDict(_ dict: [String: Any], keys: [String]) -> String? {
+    for key in keys {
+        if let value = dict[key] as? String {
+            let trimmed = value.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+    }
+    return nil
+}
+
+private func firstStringFromEvent(_ event: HookEvent, keys: [String], includeNested: Bool) -> String? {
+    if let value = firstStringFromDict(event.rawJSON, keys: keys) {
+        return value
+    }
+    if includeNested {
+        for containerKey in ["payload", "data"] {
+            if let nested = event.rawJSON[containerKey] as? [String: Any],
+               let value = firstStringFromDict(nested, keys: keys) {
+                return value
+            }
+        }
+    }
+    return nil
 }
 
 /// Handle subagent events. Returns true if the event was consumed.
