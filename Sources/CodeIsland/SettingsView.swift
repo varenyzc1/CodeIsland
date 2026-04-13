@@ -662,6 +662,15 @@ private struct AppearancePage: View {
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
     @AppStorage(SettingsKey.collapsedWidthScale) private var collapsedWidthScale = SettingsDefaults.collapsedWidthScale
+    @AppStorage(SettingsKey.notchHeightMode) private var notchHeightModeRaw = SettingsDefaults.notchHeightMode
+    @AppStorage(SettingsKey.customNotchHeight) private var customNotchHeight = SettingsDefaults.customNotchHeight
+
+    private var notchHeightMode: Binding<NotchHeightMode> {
+        Binding(
+            get: { NotchHeightMode(rawValue: notchHeightModeRaw) ?? .matchNotch },
+            set: { notchHeightModeRaw = $0.rawValue }
+        )
+    }
 
     var body: some View {
         Form {
@@ -699,6 +708,27 @@ private struct AppearancePage: View {
                     Text(l10n["collapsed_width_scale_desc"])
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker(selection: notchHeightMode) {
+                        Text(l10n["notch_height_match_notch"]).tag(NotchHeightMode.matchNotch)
+                        Text(l10n["notch_height_match_menubar"]).tag(NotchHeightMode.matchMenuBar)
+                        Text(l10n["notch_height_custom"]).tag(NotchHeightMode.custom)
+                    } label: {
+                        Text(l10n["notch_height_mode"])
+                        Text(l10n["notch_height_mode_desc"])
+                    }
+
+                    if notchHeightMode.wrappedValue == .custom {
+                        HStack {
+                            Text(l10n["custom_notch_height"])
+                            Spacer()
+                            Text("\(Int(customNotchHeight.rounded()))pt")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: $customNotchHeight, in: 15...60, step: 1)
+                    }
                 }
             }
 

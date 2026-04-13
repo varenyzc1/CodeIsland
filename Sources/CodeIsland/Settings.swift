@@ -10,6 +10,12 @@ enum AppVersion {
     }
 }
 
+enum NotchHeightMode: String, CaseIterable {
+    case matchNotch = "matchNotch"
+    case matchMenuBar = "matchMenuBar"
+    case custom = "custom"
+}
+
 enum SettingsKey {
     // Language
     static let appLanguage = "appLanguage"                 // "system", "en", "zh", "tr"
@@ -33,6 +39,8 @@ enum SettingsKey {
     static let contentFontSize = "contentFontSize"
     static let aiMessageLines = "aiMessageLines"
     static let showAgentDetails = "showAgentDetails"
+    static let notchHeightMode = "notchHeightMode"
+    static let customNotchHeight = "customNotchHeight"
 
     // Sound
     static let soundEnabled = "soundEnabled"
@@ -87,6 +95,8 @@ struct SettingsDefaults {
     static let contentFontSize = 11
     static let aiMessageLines = 1
     static let showAgentDetails = false
+    static let notchHeightMode = NotchHeightMode.matchNotch.rawValue
+    static let customNotchHeight = 37.0
 
     static let soundEnabled = false
     static let soundVolume = 50
@@ -131,6 +141,8 @@ class SettingsManager {
             SettingsKey.contentFontSize: SettingsDefaults.contentFontSize,
             SettingsKey.aiMessageLines: SettingsDefaults.aiMessageLines,
             SettingsKey.showAgentDetails: SettingsDefaults.showAgentDetails,
+            SettingsKey.notchHeightMode: SettingsDefaults.notchHeightMode,
+            SettingsKey.customNotchHeight: SettingsDefaults.customNotchHeight,
             SettingsKey.soundEnabled: SettingsDefaults.soundEnabled,
             SettingsKey.soundVolume: SettingsDefaults.soundVolume,
             SettingsKey.soundSessionStart: SettingsDefaults.soundSessionStart,
@@ -213,6 +225,19 @@ class SettingsManager {
     var showAgentDetails: Bool {
         get { defaults.bool(forKey: SettingsKey.showAgentDetails) }
         set { defaults.set(newValue, forKey: SettingsKey.showAgentDetails) }
+    }
+
+    var notchHeightMode: NotchHeightMode {
+        get {
+            let raw = defaults.string(forKey: SettingsKey.notchHeightMode) ?? SettingsDefaults.notchHeightMode
+            return NotchHeightMode(rawValue: raw) ?? .matchNotch
+        }
+        set { defaults.set(newValue.rawValue, forKey: SettingsKey.notchHeightMode) }
+    }
+
+    var customNotchHeight: Double {
+        get { defaults.double(forKey: SettingsKey.customNotchHeight) }
+        set { defaults.set(newValue, forKey: SettingsKey.customNotchHeight) }
     }
 
     var maxToolHistory: Int {
