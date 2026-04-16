@@ -1873,35 +1873,35 @@ private struct SessionCard: View {
                     let tool = session.currentTool ?? (appState.permissionQueue[idx].event.toolName ?? "Unknown")
                     let input = appState.permissionQueue[idx].event.toolInput
                     HStack(spacing: 8) {
-                        Text("审批 \(idx + 1)/\(appState.permissionQueue.count): \(tool)")
+                        Text(String(format: L10n.shared["approval_queue_label"], idx + 1, appState.permissionQueue.count, tool))
                             .font(.system(size: fontSize, weight: .medium, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.65))
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Spacer(minLength: 8)
                         inlineActionButton(
-                            showApprovalDetails ? "收起" : "详情",
+                            showApprovalDetails ? L10n.shared["approval_details_collapse"] : L10n.shared["approval_details_expand"],
                             fg: .white,
                             bg: Color.white.opacity(0.10),
                             enabled: true,
                             action: { withAnimation(NotchAnimation.micro) { showApprovalDetails.toggle() } }
                         )
                         inlineActionButton(
-                            "Allow",
+                            L10n.shared["allow_once"],
                             fg: .white,
                             bg: Color(red: 0.25, green: 0.65, blue: 0.35),
                             enabled: isActiveApproval,
                             action: { appState.approvePermission(always: false) }
                         )
                         inlineActionButton(
-                            "Always",
+                            L10n.shared["always"],
                             fg: .white,
                             bg: Color(red: 0.25, green: 0.55, blue: 0.85),
                             enabled: isActiveApproval,
                             action: { appState.approvePermission(always: true) }
                         )
                         inlineActionButton(
-                            "Deny",
+                            L10n.shared["deny"],
                             fg: .white,
                             bg: Color(red: 0.85, green: 0.3, blue: 0.3),
                             enabled: isActiveApproval,
@@ -1909,7 +1909,7 @@ private struct SessionCard: View {
                         )
                     }
 
-                    // Always show a compact, 1-line summary so the list审批有上下文
+                    // Always show a compact, 1-line summary so the session list has approval context
                     if let summary = approvalInlineSummary(tool: tool, toolDescription: session.toolDescription, toolInput: input) {
                         switch summary {
                         case .text(let s):

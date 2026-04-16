@@ -355,7 +355,7 @@ struct ConfigInstaller {
                 ("subagent_stop", 5, true),
                 ("stop", 5, true),
                 ("pre_compact", 5, true),
-                ("post_compact", 5, true),    
+                ("post_compact", 5, true),
             ]
         case .copilot:
             return [

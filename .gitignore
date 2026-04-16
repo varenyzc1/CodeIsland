@@ -15,8 +15,9 @@ docs/superpowers/
 .cursor/
 
 # Tmp files
-.log
-.tmp
+*.log
+*.tmp
+dev.sh
 
 # Code agents config files
 .agents/
