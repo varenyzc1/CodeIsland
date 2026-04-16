@@ -61,6 +61,14 @@ final class AppState {
     }
     private var modelReadRetryAt: [String: Date] = [:]
 
+    private var dismissedPermissionSessionIds: Set<String> = []
+    private func nextVisiblePermissionIndex() -> Int? {
+        permissionQueue.firstIndex { request in
+            let sid = request.event.sessionId ?? "default"
+            return !dismissedPermissionSessionIds.contains(sid)
+        }
+    }
+
     var rotatingSessionId: String?
     var rotatingSession: SessionSnapshot? {
         guard let rid = rotatingSessionId else { return nil }
@@ -846,6 +854,9 @@ final class AppState {
         extractMetadata(into: &sessions, sessionId: sessionId, event: event)
         tryMonitorSession(sessionId)
 
+        // New incoming permission request means session needs user decision again.
+        dismissedPermissionSessionIds.remove(sessionId)
+
         // Clear any pending questions for THIS session (mutually exclusive within a session)
         drainQuestions(forSession: sessionId)
 
@@ -869,6 +880,8 @@ final class AppState {
     func approvePermission(always: Bool = false) {
         guard !permissionQueue.isEmpty else { return }
         let pending = permissionQueue.removeFirst()
+        let sessionId = pending.event.sessionId ?? "default"
+        dismissedPermissionSessionIds.remove(sessionId)
         let responseData: Data
         if always {
             let toolName = pending.event.toolName ?? ""
@@ -892,7 +905,6 @@ final class AppState {
             responseData = Data(response.utf8)
         }
         pending.continuation.resume(returning: responseData)
-        let sessionId = pending.event.sessionId ?? "default"
         sessions[sessionId]?.status = .running
 
         showNextPending()
@@ -902,9 +914,10 @@ final class AppState {
     func denyPermission() {
         guard !permissionQueue.isEmpty else { return }
         let pending = permissionQueue.removeFirst()
+        let sessionId = pending.event.sessionId ?? "default"
+        dismissedPermissionSessionIds.remove(sessionId)
         let response = #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
         pending.continuation.resume(returning: Data(response.utf8))
-        let sessionId = pending.event.sessionId ?? "default"
         sessions[sessionId]?.status = .idle
         sessions[sessionId]?.currentTool = nil
         sessions[sessionId]?.toolDescription = nil
@@ -914,6 +927,24 @@ final class AppState {
         }
 
         showNextPending()
+        refreshDerivedState()
+    }
+
+    func dismissPermissionPrompt() {
+        guard let pending = permissionQueue.first else { return }
+
+        let sessionId = pending.event.sessionId ?? "default"
+        dismissedPermissionSessionIds.insert(sessionId)
+
+        if nextVisiblePermissionIndex() != nil {
+            showNextPending()
+        } else {
+            if case .approvalCard = surface {
+                withAnimation(NotchAnimation.close) {
+                    surface = .collapsed
+                }
+            }
+        }
         refreshDerivedState()
     }
 
@@ -1152,6 +1183,7 @@ final class AppState {
 
     /// Drain all queued permissions for a specific session, resuming their continuations with deny
     private func drainPermissions(forSession sessionId: String) {
+        dismissedPermissionSessionIds.remove(sessionId)
         let denyResponse = Data(#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#.utf8)
         permissionQueue.removeAll { item in
             guard item.event.sessionId == sessionId else { return false }
@@ -1197,7 +1229,9 @@ final class AppState {
     /// After dequeuing, show next pending item or collapse
     @discardableResult
     private func showNextPending() -> Bool {
-        if let next = permissionQueue.first {
+        if let idx = nextVisiblePermissionIndex() {
+            let next = permissionQueue.remove(at: idx)
+            permissionQueue.insert(next, at: 0)
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
             surface = .approvalCard(sessionId: sid)
