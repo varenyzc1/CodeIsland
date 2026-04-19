@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 import CodeIslandCore
 
@@ -12,6 +13,7 @@ enum SettingsPage: String, Identifiable, Hashable {
     case sound
     case shortcuts
     case remote
+    case feishu
     case hooks
     case about
 
@@ -26,6 +28,7 @@ enum SettingsPage: String, Identifiable, Hashable {
         case .sound: return "speaker.wave.2.fill"
         case .shortcuts: return "command.circle.fill"
         case .remote: return "network"
+        case .feishu: return "message.badge.waveform"
         case .hooks: return "link.circle.fill"
         case .about: return "info.circle.fill"
         }
@@ -40,6 +43,7 @@ enum SettingsPage: String, Identifiable, Hashable {
         case .sound: return .green
         case .shortcuts: return .indigo
         case .remote: return .mint
+        case .feishu: return .teal
         case .hooks: return .purple
         case .about: return .cyan
         }
@@ -53,8 +57,36 @@ private struct SidebarGroup: Hashable {
 
 private let sidebarGroups: [SidebarGroup] = [
     SidebarGroup(title: nil, pages: [.general, .behavior, .appearance, .mascots, .sound, .shortcuts]),
-    SidebarGroup(title: "CodeIsland", pages: [.remote, .hooks, .about]),
+    SidebarGroup(title: "CodeIsland", pages: [.remote, .feishu, .hooks, .about]),
 ]
+
+private struct ConfigurableSource: Identifiable {
+    let source: String
+    let name: String
+    let configPath: String
+    let fullPath: String
+
+    var id: String { source }
+}
+
+private let configurableSources: [ConfigurableSource] = {
+    let cliSources = ConfigInstaller.allCLIs.map {
+        ConfigurableSource(
+            source: $0.source,
+            name: $0.name,
+            configPath: $0.displayConfigPath,
+            fullPath: $0.fullPath
+        )
+    }
+    let openCode = ConfigurableSource(
+        source: "opencode",
+        name: "OpenCode",
+        configPath: "~/.config/opencode/config.json",
+        fullPath: NSHomeDirectory() + "/.config/opencode/config.json"
+    )
+    return (cliSources + [openCode])
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+}()
 
 // MARK: - Main View
 
@@ -90,6 +122,7 @@ struct SettingsView: View {
                 case .sound: SoundPage()
                 case .shortcuts: ShortcutsPage()
                 case .remote: RemoteHostsPage()
+                case .feishu: FeishuBotsPage()
                 case .hooks: HooksPage()
                 case .about: AboutPage()
                 }
@@ -100,6 +133,258 @@ struct SettingsView: View {
 }
 
 // MARK: - Remote Page
+
+private struct FeishuBotsPage: View {
+    @ObservedObject private var l10n = L10n.shared
+    @State private var refreshKey = 0
+
+    private let quickCreateBotURL = URL(string: "https://larkcommunity.feishu.cn/wiki/NhpowW5L3ijRmHkhaOhcPpSBn3b")!
+
+    var body: some View {
+        Form {
+            Section(l10n["feishu_intro_title"]) {
+                Text(l10n["feishu_intro_body"])
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(l10n["feishu_command_hint"])
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(l10n["feishu_event_hint"])
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Link(destination: quickCreateBotURL) {
+                    Label(l10n["feishu_quick_create_bot"], systemImage: "arrow.up.right.square")
+                        .font(.caption)
+                }
+            }
+
+            Section(l10n["feishu_tools"]) {
+                ForEach(configurableSources) { item in
+                    FeishuBotRow(source: item.source, name: item.name)
+                        .id("\(item.source)-\(refreshKey)")
+                        .onChange(of: bridgeConfigRevision) { _, _ in
+                            refreshKey += 1
+                        }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var bridgeConfigRevision: Int {
+        FeishuBridgeManager.shared.configRevision
+    }
+}
+
+private struct FeishuBotRow: View {
+    @ObservedObject private var l10n = L10n.shared
+    @ObservedObject private var bridge = FeishuBridgeManager.shared
+
+    let source: String
+    let name: String
+
+    @State private var config: FeishuBotConfig
+    @State private var expanded = false
+    @State private var isBindingHighlighted = false
+    @State private var highlightResetWorkItem: DispatchWorkItem?
+
+    init(source: String, name: String) {
+        self.source = source
+        self.name = name
+        let stored = FeishuSettingsStore.load()[source] ?? .empty(source: source)
+        _config = State(initialValue: stored)
+    }
+
+    private var statusText: String {
+        bridge.statusText[source] ?? l10n["feishu_disconnected"]
+    }
+
+    private var bindingKey: String {
+        config.effectiveBindingKey
+    }
+
+    private var bindingStatusText: String {
+        if config.boundChatID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return l10n["feishu_not_bound"]
+        }
+        return String(format: l10n["feishu_bound_to"], config.boundChatID)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: expanded ? 10 : 4) {
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        expanded.toggle()
+                    }
+                } label: {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14)
+                }
+                .buttonStyle(.plain)
+
+                if let icon = cliIcon(source: source, size: 20) {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 20, height: 20)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name)
+                    HStack(spacing: 6) {
+                        Text(summaryText)
+                            .font(.system(size: 11, design: summaryIsMonospaced ? .monospaced : .default))
+                            .foregroundStyle(.tertiary)
+                        Button {
+                            revealConfigFile()
+                        } label: {
+                            Image(systemName: "arrow.right.circle")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.blue)
+                        }
+                        .buttonStyle(.plain)
+                        .help(l10n["feishu_open_config_file"])
+                    }
+                }
+
+                Spacer()
+
+                Toggle("", isOn: $config.enabled)
+                    .labelsHidden()
+                    .onChange(of: config.enabled) { _, _ in
+                        save()
+                    }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    expanded.toggle()
+                }
+            }
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("App ID", text: $config.appID)
+                        .onSubmit { save() }
+
+                    SecureField("App Secret", text: $config.appSecret)
+                        .onSubmit { save() }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(l10n["feishu_binding_key"])
+                            .font(.system(size: 11, weight: .medium))
+                        Text(bindingKey)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text(l10n["feishu_bind_hint"])
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Text(bindingStatusText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(statusText)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button(l10n["save"]) {
+                            save()
+                        }
+                        Button(l10n["feishu_copy_key"]) {
+                            save()
+                            copyBindingKey()
+                        }
+                        Button(l10n["feishu_regenerate_key"]) {
+                            save()
+                            FeishuBridgeManager.shared.regenerateBindingKey(for: source)
+                            reloadConfig()
+                        }
+                        Button(l10n["feishu_send_test"]) {
+                            save()
+                            FeishuBridgeManager.shared.sendTestMessage(source: source)
+                        }
+                        .disabled(!(config.enabled && config.isConnectable && config.isBound))
+                    }
+                }
+                .padding(.leading, 42)
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isBindingHighlighted ? Color.accentColor.opacity(0.12) : Color.clear)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(isBindingHighlighted ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 1)
+        }
+        .onChange(of: bridge.configRevision) { _, _ in
+            reloadConfig()
+        }
+        .onChange(of: bridge.bindingRevision) { _, _ in
+            guard bridge.lastBoundSource == source else { return }
+            reloadConfig()
+            withAnimation(.easeInOut(duration: 0.16)) {
+                expanded = true
+                isBindingHighlighted = true
+            }
+            highlightResetWorkItem?.cancel()
+            let workItem = DispatchWorkItem {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    isBindingHighlighted = false
+                }
+            }
+            highlightResetWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: workItem)
+        }
+    }
+
+    private var summaryText: String {
+        if !config.enabled { return l10n["feishu_disabled"] }
+        if !config.isConnectable { return l10n["feishu_missing_credentials"] }
+        if !config.isBound { return l10n["feishu_not_bound"] }
+        return config.boundChatID
+    }
+
+    private var summaryIsMonospaced: Bool {
+        config.enabled && config.isBound
+    }
+
+    private func save() {
+        var configs = FeishuSettingsStore.load()
+        configs[source] = FeishuBotConfig(
+            source: source,
+            enabled: config.enabled,
+            appID: config.appID,
+            appSecret: config.appSecret,
+            bindingKey: config.bindingKey,
+            boundChatID: config.boundChatID
+        )
+        FeishuSettingsStore.save(configs)
+        FeishuBridgeManager.shared.reload()
+        reloadConfig()
+    }
+
+    private func reloadConfig() {
+        config = FeishuSettingsStore.load()[source] ?? .empty(source: source)
+    }
+
+    private func copyBindingKey() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(bindingKey, forType: .string)
+    }
+
+    private func revealConfigFile() {
+        save()
+        NSWorkspace.shared.activateFileViewerSelecting([FeishuSettingsStore.configFileURL])
+    }
+}
 
 private struct RemoteHostsPage: View {
     @ObservedObject private var l10n = L10n.shared
@@ -447,10 +732,9 @@ private struct HooksPage: View {
     @State private var customFormat: HookFormat = .claude
 
     private func refreshCLIStatuses() {
-        for cli in ConfigInstaller.allCLIs {
-            cliStatuses[cli.source] = ConfigInstaller.isInstalled(source: cli.source)
+        for item in configurableSources {
+            cliStatuses[item.source] = ConfigInstaller.isInstalled(source: item.source)
         }
-        cliStatuses["opencode"] = ConfigInstaller.isInstalled(source: "opencode")
     }
 
     private func statusText(installed: Bool, exists: Bool) -> String {
@@ -460,31 +744,19 @@ private struct HooksPage: View {
     var body: some View {
         Form {
             Section(l10n["cli_status"]) {
-                ForEach(ConfigInstaller.allCLIs, id: \.source) { cli in
-                    let installed = cliStatuses[cli.source] ?? false
-                    let exists = ConfigInstaller.cliExists(source: cli.source)
+                ForEach(configurableSources) { item in
+                    let installed = cliStatuses[item.source] ?? false
+                    let exists = ConfigInstaller.cliExists(source: item.source)
                     CLIStatusRow(
-                        name: cli.name,
-                        source: cli.source,
-                        configPath: cli.displayConfigPath,
-                        fullPath: cli.fullPath,
+                        name: item.name,
+                        source: item.source,
+                        configPath: item.configPath,
+                        fullPath: item.fullPath,
                         installed: installed,
                         exists: exists
                     ) { _ in refreshCLIStatuses() }
-                    .id("\(cli.source)-\(refreshKey)")
+                    .id("\(item.source)-\(refreshKey)")
                 }
-                // OpenCode (plugin-based, not hooks)
-                let ocInstalled = cliStatuses["opencode"] ?? false
-                let ocExists = ConfigInstaller.cliExists(source: "opencode")
-                CLIStatusRow(
-                    name: "OpenCode",
-                    source: "opencode",
-                    configPath: "~/.config/opencode/config.json",
-                    fullPath: NSHomeDirectory() + "/.config/opencode/config.json",
-                    installed: ocInstalled,
-                    exists: ocExists
-                ) { _ in refreshCLIStatuses() }
-                .id("opencode-\(refreshKey)")
             }
 
             Section("Custom CLIs") {

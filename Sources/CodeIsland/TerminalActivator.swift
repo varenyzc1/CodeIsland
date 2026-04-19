@@ -184,6 +184,47 @@ struct TerminalActivator {
         }
     }
 
+    /// Inject a prompt into an existing session. Prefers terminal-native APIs
+    /// (tmux/iTerm2/Terminal.app/kitty) and falls back to focusing the target
+    /// terminal then pasting the text with Return.
+    @discardableResult
+    static func injectPrompt(_ prompt: String, into session: SessionSnapshot, sessionId: String? = nil) -> Bool {
+        guard !session.isRemote else { return false }
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        if let pane = session.tmuxPane, !pane.isEmpty {
+            return sendToTmux(prompt: trimmed, pane: pane, tmuxEnv: session.tmuxEnv)
+        }
+
+        let termApp: String
+        if let bundleId = session.termBundleId,
+           let resolved = knownTerminals.first(where: { $0.bundleId == bundleId })?.name {
+            termApp = resolved
+        } else {
+            termApp = session.termApp ?? detectRunningTerminal()
+        }
+        let lower = termApp.lowercased()
+
+        if lower.contains("iterm") {
+            return sendToITerm(prompt: trimmed, session: session)
+        }
+
+        if session.termBundleId == "com.apple.Terminal" || (session.termBundleId == nil && lower == "terminal") {
+            return sendToTerminalApp(prompt: trimmed, session: session)
+        }
+
+        if lower.contains("kitty") {
+            return sendToKitty(prompt: trimmed, session: session)
+        }
+
+        if lower.contains("wezterm") || lower.contains("wez") {
+            return sendToWezTerm(prompt: trimmed, session: session)
+        }
+
+        return pasteFallback(prompt: trimmed, session: session, sessionId: sessionId)
+    }
+
     // MARK: - Ghostty (AppleScript: match by CWD + session ID in title)
 
     private static func activateGhostty(
@@ -601,6 +642,139 @@ struct TerminalActivator {
         }
     }
 
+    @discardableResult
+    private static func sendToTmux(prompt: String, pane: String, tmuxEnv: String? = nil) -> Bool {
+        guard let bin = findBinary("tmux") else { return false }
+        guard runProcess(bin, args: ["send-keys", "-t", pane, "-l", prompt], env: tmuxProcessEnv(tmuxEnv)) != nil else {
+            return false
+        }
+        _ = runProcess(bin, args: ["send-keys", "-t", pane, "C-m"], env: tmuxProcessEnv(tmuxEnv))
+        return true
+    }
+
+    @discardableResult
+    private static func sendToITerm(prompt: String, session: SessionSnapshot) -> Bool {
+        let targetScript: String
+        if let sessionId = session.itermSessionId, !sessionId.isEmpty {
+            targetScript = """
+            tell application "iTerm2"
+                repeat with aWindow in windows
+                    repeat with aTab in tabs of aWindow
+                        repeat with aSession in sessions of aTab
+                            if unique ID of aSession is "\(escapeAppleScript(sessionId))" then
+                                write text "\(escapeAppleScript(prompt))" to aSession
+                                return "ok"
+                            end if
+                        end repeat
+                    end repeat
+                end repeat
+            end tell
+            """
+        } else if let tty = session.ttyPath, !tty.isEmpty {
+            let fullTty = tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)"
+            targetScript = """
+            tell application "iTerm2"
+                repeat with aWindow in windows
+                    repeat with aTab in tabs of aWindow
+                        repeat with aSession in sessions of aTab
+                            try
+                                if tty of aSession is "\(escapeAppleScript(fullTty))" then
+                                    write text "\(escapeAppleScript(prompt))" to aSession
+                                    return "ok"
+                                end if
+                            end try
+                        end repeat
+                    end repeat
+                end repeat
+            end tell
+            """
+        } else {
+            return pasteFallback(prompt: prompt, session: session, sessionId: nil)
+        }
+        return runAppleScriptSync(targetScript)?.trimmingCharacters(in: .whitespacesAndNewlines) == "ok"
+    }
+
+    @discardableResult
+    private static func sendToTerminalApp(prompt: String, session: SessionSnapshot) -> Bool {
+        let targetScript: String
+        if let tty = session.ttyPath, !tty.isEmpty {
+            targetScript = """
+            tell application "Terminal"
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        if tty of t is "\(escapeAppleScript(tty))" then
+                            do script "\(escapeAppleScript(prompt))" in t
+                            return "ok"
+                        end if
+                    end repeat
+                end repeat
+            end tell
+            """
+        } else {
+            targetScript = """
+            tell application "Terminal"
+                if (count of windows) > 0 then
+                    do script "\(escapeAppleScript(prompt))" in selected tab of front window
+                    return "ok"
+                end if
+            end tell
+            """
+        }
+        return runAppleScriptSync(targetScript)?.trimmingCharacters(in: .whitespacesAndNewlines) == "ok"
+    }
+
+    @discardableResult
+    private static func sendToKitty(prompt: String, session: SessionSnapshot) -> Bool {
+        guard let bin = findBinary("kitten") else { return false }
+        if let windowId = session.kittyWindowId, !windowId.isEmpty {
+            let payload = prompt + "\n"
+            return runProcess(bin, args: ["@", "send-text", "--match", "id:\(windowId)", payload]) != nil
+        }
+        return pasteFallback(prompt: prompt, session: session, sessionId: nil)
+    }
+
+    @discardableResult
+    private static func sendToWezTerm(prompt: String, session: SessionSnapshot) -> Bool {
+        guard let bin = findBinary("wezterm"),
+              let json = runProcess(bin, args: ["cli", "list", "--format", "json"]),
+              let panes = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]] else {
+            return pasteFallback(prompt: prompt, session: session, sessionId: nil)
+        }
+
+        var paneId: Int?
+        if let tty = session.ttyPath, !tty.isEmpty {
+            paneId = panes.first(where: { ($0["tty_name"] as? String) == tty })?["pane_id"] as? Int
+        }
+        if paneId == nil, let cwd = session.cwd {
+            let cwdURL = "file://" + cwd
+            paneId = panes.first(where: {
+                guard let paneCwd = $0["cwd"] as? String else { return false }
+                return paneCwd == cwdURL || paneCwd == cwd
+            })?["pane_id"] as? Int
+        }
+        guard let paneId else {
+            return pasteFallback(prompt: prompt, session: session, sessionId: nil)
+        }
+        return runProcess(bin, args: ["cli", "send-text", "--pane-id", "\(paneId)", "--no-paste", prompt + "\n"]) != nil
+    }
+
+    @discardableResult
+    private static func pasteFallback(prompt: String, session: SessionSnapshot, sessionId: String?) -> Bool {
+        activate(session: session, sessionId: sessionId)
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(prompt, forType: .string)
+        let script = """
+        delay 0.2
+        tell application "System Events"
+            keystroke "v" using command down
+            key code 36
+        end tell
+        """
+        runOsaScript(script)
+        return true
+    }
+
     // MARK: - IDE window-level activation (JetBrains, VS Code, Zed, etc.)
 
     /// Activate the specific IDE window whose title contains the project folder name.
@@ -774,6 +948,14 @@ struct TerminalActivator {
             proc.standardError = FileHandle.nullDevice
             try? proc.run()
         }
+    }
+
+    private static func runAppleScriptSync(_ source: String) -> String? {
+        guard let script = NSAppleScript(source: source) else { return nil }
+        var error: NSDictionary?
+        let result = script.executeAndReturnError(&error)
+        if error != nil { return nil }
+        return result.stringValue
     }
 
     /// Escape special characters for AppleScript string interpolation

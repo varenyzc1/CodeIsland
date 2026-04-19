@@ -848,6 +848,15 @@ final class AppState {
             refreshProviderTitle(for: sessionId)
         }
 
+        let normalizedEvent = EventNormalizer.normalize(event.eventName)
+        if normalizedEvent == "UserPromptSubmit" || normalizedEvent == "SessionStart" {
+            FeishuBridgeManager.shared.resetAssistantReplyDedup(sessionId: sessionId)
+        }
+        if let session = sessions[sessionId],
+           normalizedEvent == "Stop" || normalizedEvent == "AfterAgentResponse" {
+            FeishuBridgeManager.shared.notifyAssistantReply(sessionId: sessionId, session: session)
+        }
+
         // Handle the "else if activeSessionId == sessionId → mostActive" edge case
         // (reducer can't check activeSessionId since it's AppState-local)
         if sessions[sessionId]?.status == .idle && activeSessionId == sessionId {
@@ -936,6 +945,9 @@ final class AppState {
                 surface = .approvalCard(sessionId: sessionId)
             }
             SoundManager.shared.handleEvent("PermissionRequest")
+        }
+        if let session = sessions[sessionId] {
+            FeishuBridgeManager.shared.notifyPermissionRequest(sessionId: sessionId, session: session, event: event)
         }
         refreshDerivedState()
     }
@@ -1038,6 +1050,9 @@ final class AppState {
             }
             SoundManager.shared.handleEvent("PermissionRequest")
         }
+        if let session = sessions[sessionId] {
+            FeishuBridgeManager.shared.notifyQuestionRequest(sessionId: sessionId, session: session, question: request)
+        }
         refreshDerivedState()
     }
 
@@ -1139,7 +1154,192 @@ final class AppState {
             }
             SoundManager.shared.handleEvent("PermissionRequest")
         }
+        if let session = sessions[sessionId] {
+            FeishuBridgeManager.shared.notifyQuestionRequest(sessionId: sessionId, session: session, question: request)
+        }
         refreshDerivedState()
+    }
+
+    private func permissionIndex(forSource source: String) -> Int? {
+        permissionQueue.firstIndex { request in
+            let sid = request.event.sessionId ?? "default"
+            return sessions[sid]?.source == source
+        }
+    }
+
+    private func questionIndex(forSource source: String) -> Int? {
+        questionQueue.firstIndex { request in
+            let sid = request.event.sessionId ?? "default"
+            return sessions[sid]?.source == source
+        }
+    }
+
+    private func resolvePermission(at index: Int, allow: Bool) -> String {
+        guard permissionQueue.indices.contains(index) else { return "没有待处理的权限请求。" }
+        let pending = permissionQueue.remove(at: index)
+        let sessionId = pending.event.sessionId ?? "default"
+        dismissedPermissionSessionIds.remove(sessionId)
+
+        let response = allow
+            ? #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#
+            : #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
+        pending.continuation.resume(returning: Data(response.utf8))
+
+        if allow {
+            sessions[sessionId]?.status = .running
+        } else {
+            sessions[sessionId]?.status = .idle
+            sessions[sessionId]?.currentTool = nil
+            sessions[sessionId]?.toolDescription = nil
+            if activeSessionId == sessionId {
+                activeSessionId = mostActiveSessionId()
+            }
+        }
+
+        showNextPending()
+        refreshDerivedState()
+
+        let label = sessions[sessionId]?.displayTitle(sessionId: sessionId) ?? sessionId
+        return allow ? "已批准：\(label)" : "已拒绝：\(label)"
+    }
+
+    private func resolveQuestion(at index: Int, answer: String) -> String {
+        guard questionQueue.indices.contains(index) else { return "没有待处理的问题。" }
+        let pending = questionQueue[index]
+
+        if pending.isFromPermission,
+           let askState = pending.askUserQuestionState,
+           askState.items.count > 1 {
+            return "当前问题包含多个字段，请在 CodeIsland 面板中完成。"
+        }
+
+        let removed = questionQueue.remove(at: index)
+        let responseData: Data
+        if removed.isFromPermission {
+            let answerKey = removed.askUserQuestionState?.items.first?.answerKey ?? removed.question.header ?? "answer"
+            let obj: [String: Any] = [
+                "hookSpecificOutput": [
+                    "hookEventName": "PermissionRequest",
+                    "decision": [
+                        "behavior": "allow",
+                        "updatedInput": [
+                            "answers": [answerKey: answer]
+                        ]
+                    ] as [String: Any]
+                ] as [String: Any]
+            ]
+            responseData = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
+        } else {
+            let obj: [String: Any] = [
+                "hookSpecificOutput": [
+                    "hookEventName": "Notification",
+                    "answer": answer
+                ] as [String: Any]
+            ]
+            responseData = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
+        }
+
+        removed.continuation.resume(returning: responseData)
+        let sessionId = removed.event.sessionId ?? "default"
+        sessions[sessionId]?.status = .processing
+        showNextPending()
+        refreshDerivedState()
+
+        let label = sessions[sessionId]?.displayTitle(sessionId: sessionId) ?? sessionId
+        return "已回复：\(label)"
+    }
+
+    func hasAnswerableQuestion(forSource source: String) -> Bool {
+        guard let index = questionIndex(forSource: source),
+              questionQueue.indices.contains(index) else { return false }
+        let pending = questionQueue[index]
+        if let askState = pending.askUserQuestionState {
+            return askState.items.count <= 1
+        }
+        return true
+    }
+
+    func approvePendingPermission(forSource source: String) -> String {
+        guard let index = permissionIndex(forSource: source) else {
+            return "当前没有待处理的权限请求。"
+        }
+        return resolvePermission(at: index, allow: true)
+    }
+
+    func denyPendingPermission(forSource source: String) -> String {
+        guard let index = permissionIndex(forSource: source) else {
+            return "当前没有待处理的权限请求。"
+        }
+        return resolvePermission(at: index, allow: false)
+    }
+
+    func answerPendingQuestion(forSource source: String, answer: String) -> String {
+        guard let index = questionIndex(forSource: source) else {
+            return "当前没有待回答的问题。"
+        }
+        return resolveQuestion(at: index, answer: answer)
+    }
+
+    func feishuStatusSummary(forSource source: String) -> String {
+        func label(for status: AgentStatus) -> String {
+            switch status {
+            case .idle: return "idle"
+            case .processing: return "processing"
+            case .running: return "running"
+            case .waitingApproval: return "waiting_approval"
+            case .waitingQuestion: return "waiting_question"
+            }
+        }
+
+        let active = sessions
+            .filter { $0.value.source == source && $0.value.status != .idle }
+            .sorted { $0.value.lastActivity > $1.value.lastActivity }
+
+        if active.isEmpty {
+            return "当前 \(source) 没有活跃会话。"
+        }
+
+        let lines = active.prefix(3).map { sessionId, session in
+            let folder = session.cwd ?? "未知文件夹"
+            return "[\(label(for: session.status))] \(session.displayTitle(sessionId: sessionId))\n文件夹：\(folder)"
+        }
+        let suffix = active.count > 3 ? "\n还有 \(active.count - 3) 个会话未展示。" : ""
+        return lines.joined(separator: "\n") + suffix
+    }
+
+    func submitRemotePrompt(forSource source: String, prompt: String) -> String {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "要发送给 \(source) 的内容不能为空。" }
+
+        let candidates = sessions
+            .filter { $0.value.source == source }
+            .sorted { lhs, rhs in
+                if lhs.value.status == .idle && rhs.value.status != .idle { return false }
+                if lhs.value.status != .idle && rhs.value.status == .idle { return true }
+                return lhs.value.lastActivity > rhs.value.lastActivity
+            }
+
+        guard let (sessionId, session) = candidates.first else {
+            return "当前没有可用的 \(source) 会话。"
+        }
+
+        if session.isNativeAppMode {
+            return "当前 \(source) 会话运行在原生 App 模式，暂不支持通过飞书注入新任务。"
+        }
+
+        let success = TerminalActivator.injectPrompt(trimmed, into: session, sessionId: sessionId)
+        guard success else {
+            return "没能把消息注入到 \(session.displayTitle(sessionId: sessionId))，请确认它运行在受支持的终端中。"
+        }
+
+        FeishuBridgeManager.shared.resetAssistantReplyDedup(sessionId: sessionId)
+        sessions[sessionId]?.lastUserPrompt = trimmed
+        sessions[sessionId]?.addRecentMessage(ChatMessage(isUser: true, text: trimmed))
+        sessions[sessionId]?.lastActivity = Date()
+        refreshDerivedState()
+        scheduleSave()
+
+        return "已发送到 \(session.displayTitle(sessionId: sessionId))。\n文件夹：\(session.cwd ?? "未知")"
     }
 
     func answerQuestion(_ answer: String) {

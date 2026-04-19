@@ -26,6 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // hooks get no response and Claude Code denies them.
         hookServer = HookServer(appState: appState)
         hookServer?.start()
+        FeishuBridgeManager.shared.start(appState: appState)
         RemoteManager.shared.onDisconnect = { [weak appState] hostId in
             appState?.removeRemoteSessions(hostId: hostId)
         }
@@ -104,6 +105,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         teardownGlobalShortcut()
         appState.saveSessions()
         RemoteManager.shared.shutdown()
+        FeishuBridgeManager.shared.stop()
         hookServer?.stop()
         appState.stopSessionDiscovery()
     }
